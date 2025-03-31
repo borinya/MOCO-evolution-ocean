@@ -5,6 +5,8 @@
 
 # This source code is licensed under the license found in the
 # LICENSE file in the root directory of this source tree.
+import os
+os.environ["PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION"] = "python"
 
 import argparse
 import builtins
@@ -54,8 +56,13 @@ parser.add_argument('-a', '--arch', metavar='ARCH', default='resnet50',
                     help='model architecture: ' +
                         ' | '.join(model_names) +
                         ' (default: resnet50)')
-parser.add_argument('-j', '--workers', default=20, type=int, metavar='N',
+
+parser.add_argument('-j', '--workers', default=0, type=int, metavar='N',
                     help='number of data loading workers (default: 20)')
+    # Параметры данных
+parser.add_argument('--io-workers', default=4, type=int, help='параллельная загрузка файлов')
+parser.add_argument('--cache-size', default=512, type=int, help='размер кэша датасета')
+
 parser.add_argument('--epochs', default=100, type=int, metavar='N',
                     help='number of total epochs to run')
 parser.add_argument('--start-epoch', default=0, type=int, metavar='N',
@@ -74,6 +81,9 @@ parser.add_argument('--wd', '--weight-decay', default=1e-6, type=float,
                     dest='weight_decay')
 parser.add_argument('-p', '--print-freq', default=10, type=int,
                     metavar='N', help='print frequency (default: 10)')
+    # Добавляем аргумент для CSV файла
+parser.add_argument('-c', '--csv-file', default='/app/MoCo/MOCOv3-MNIST/momental files and code/test_file_pathes_dataset.csv',
+                        type=str, metavar='FILE', help='path to the CSV file (default: /app/MoCo/MOCOv3-MNIST/momental files and code/test_file_pathes_dataset.csv)')
 parser.add_argument('--resume', default='', type=str, metavar='PATH',
                     help='path to latest checkpoint (default: none)')
 parser.add_argument('--world-size', default=-1, type=int,
@@ -306,19 +316,40 @@ def main_worker(gpu, ngpus_per_node, args):
         transforms.ToTensor(),
         transforms.Normalize(mean=means, std=stds)
     ]
-
-    train_dataset = moco.GLORYS12_dataset.Glorys12Dataset(csv_file='/app/MoCo/MOCOv3-MNIST/momental files and code/test_file_pathes_dataset.csv',
-                            transform1=transforms.Compose(augmentation1),
-                            transform2=transforms.Compose(augmentation2))   #moco.loader.TwoCropsTransform(transforms.Compose(augmentation2))                                                                                            transforms.Compose(augmentation2)))
- 
-    if args.distributed:
-        train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset)
-    else:
-        train_sampler = None
-
+        # Инициализация датасета с параллельной загрузкой
+    train_dataset = moco.GLORYS12_dataset.Glorys12Dataset(
+        csv_file=args.csv_file,
+        num_io_workers=args.io_workers,
+        cache_size=args.cache_size,
+        transform1=transforms.Compose(augmentation1),
+        transform2=transforms.Compose(augmentation2)
+    )
+    print('dataset собрали')
+    # DataLoader с увеличенной производительностью
     train_loader = torch.utils.data.DataLoader(
-        train_dataset, batch_size=args.batch_size, shuffle= True,
-        num_workers=args.workers, pin_memory=True, sampler=train_sampler, drop_last=True)
+        train_dataset,
+        batch_size=args.batch_size,
+        shuffle=True,
+        num_workers=args.workers,
+        pin_memory=True,
+        drop_last=True
+    )
+    print('DataLoader собрали')
+    
+
+    
+    # train_dataset = moco.GLORYS12_dataset.Glorys12Dataset(csv_file='/app/MoCo/MOCOv3-MNIST/momental files and code/test_file_pathes_dataset.csv',
+    #                         transform1=transforms.Compose(augmentation1),
+    #                         transform2=transforms.Compose(augmentation2))   #moco.loader.TwoCropsTransform(transforms.Compose(augmentation2))                                                                                            transforms.Compose(augmentation2)))
+ 
+    # if args.distributed:
+    #     train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset)
+    # else:
+    #     train_sampler = None
+
+    # train_loader = torch.utils.data.DataLoader(
+    #     train_dataset, batch_size=args.batch_size, shuffle= True,
+    #     num_workers=args.workers, pin_memory=True, sampler=train_sampler, drop_last=True)
     # В начале обучения запоминаем время запуска
     start_time = datetime.now()
     time_str = start_time.strftime("%Y%m%d_%H%M%S")
