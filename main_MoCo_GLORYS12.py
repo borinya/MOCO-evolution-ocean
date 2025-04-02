@@ -56,18 +56,18 @@ parser.add_argument('-a', '--arch', metavar='ARCH', default='resnet50',
                     help='model architecture: ' +
                         ' | '.join(model_names) +
                         ' (default: resnet50)')
-
-parser.add_argument('-j', '--workers', default=0, type=int, metavar='N',
-                    help='number of data loading workers (default: 20)')
+ 
+parser.add_argument('-j', '--workers', default=0, type=int, metavar='N', # тут самописное параллельство
+                    help='number of data loading workers (default: 0)')
     # Параметры данных
-parser.add_argument('--io-workers', default=4, type=int, help='параллельная загрузка файлов')
+parser.add_argument('--io-workers', default=64, type=int, help='параллельная загрузка файлов')
 parser.add_argument('--cache-size', default=512, type=int, help='размер кэша датасета')
 
 parser.add_argument('--epochs', default=100, type=int, metavar='N',
                     help='number of total epochs to run')
 parser.add_argument('--start-epoch', default=0, type=int, metavar='N',
                     help='manual epoch number (useful on restarts)')
-parser.add_argument('-b', '--batch-size', default=16, type=int,
+parser.add_argument('-b', '--batch-size', default=32, type=int,
                     metavar='N',
                     help='mini-batch size (default: 64), this is the total '
                          'batch size of all GPUs on all nodes when '
