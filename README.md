@@ -38,20 +38,6 @@ pip install -r requirements.txt
 
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 ## MoCo v3 for Self-supervised ResNet and ViT
 
 This is a fork of original [MoCo v3](https://github.com/MKrinitskiy/MOCOv3-MNIST.git) repository. The purpose of this repository is the hardcoded training of MoCoV3 using MNIST dataset.
