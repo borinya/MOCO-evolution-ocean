@@ -79,18 +79,16 @@ class Glorys12Dataset(Dataset):
         self._prefetch_adjacent(idx)
         self._prefetch_adjacent(close_idx)
         # Получение данных с кэшированием
-        data_array = self._get_cached_data(idx)
-        
+        data_array1 = self._get_cached_data(idx)
+        data_array2 = self._get_cached_data(close_idx)
         # Генерация аугментированных данных
         if self.transform1 and self.transform2:
-            data_array1 = self._get_cached_data(idx)
-            data_array2 = self._get_cached_data(close_idx)
+
             # data_array1 = self._load_single_file(idx)   # загружать напрямую
             # data_array2 = self._load_single_file(close_idx)  
 
-            if self.transform1 and self.transform2:
-                data_array1 = self.transform1(data_array1)
-                data_array2 = self.transform2(data_array2)
+            data_array1 = self.transform1(data_array1)
+            data_array2 = self.transform2(data_array2)
         return data_array1, data_array2
 
     def _prefetch_adjacent(self, idx):

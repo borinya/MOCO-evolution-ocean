@@ -60,16 +60,16 @@ parser.add_argument('-a', '--arch', metavar='ARCH', default='resnet50',
 parser.add_argument('-j', '--workers', default=0, type=int, metavar='N', # тут самописное параллельство
                     help='number of data loading workers (default: 0)')
     # Параметры данных
-parser.add_argument('--io-workers', default=256, type=int, help='параллельная загрузка файлов')
-parser.add_argument('--cache-size', default=2048, type=int, help='размер кэша датасета')
+parser.add_argument('--io-workers', default=128, type=int, help='параллельная загрузка файлов')
+parser.add_argument('--cache-size', default=128, type=int, help='размер кэша датасета') # размер датасета 10115
 
-parser.add_argument('--epochs', default=300, type=int, metavar='N',
+parser.add_argument('--epochs', default=100, type=int, metavar='N',
                     help='number of total epochs to run')
 parser.add_argument('--start-epoch', default=0, type=int, metavar='N',
                     help='manual epoch number (useful on restarts)')
-parser.add_argument('-b', '--batch-size', default=50, type=int,
+parser.add_argument('-b', '--batch-size', default=32, type=int,
                     metavar='N',
-                    help='mini-batch size (default: 32), this is the total '
+                    help='mini-batch size (default: 64), this is the total '
                          'batch size of all GPUs on all nodes when '
                          'using Data Parallel or Distributed Data Parallel')
 parser.add_argument('--lr', '--learning-rate', default=1e-4, type=float,
@@ -273,6 +273,14 @@ def main_worker(gpu, ngpus_per_node, args):
         
     scaler = torch.cuda.amp.GradScaler()
     summary_writer = SummaryWriter() if ((args.rank == 0) or (args.rank == -1)) else None
+    
+    # Запись аргументов в TensorBoard
+    if summary_writer is not None:
+        args_dict = vars(args)
+        args_text = '| Параметр | Значение |\n|----------|----------|\n'
+        args_text += '\n'.join([f'| **{k}** | `{v}` |' for k, v in args_dict.items()])
+        summary_writer.add_text('Аргументы обучения', args_text, 0)
+        summary_writer.flush()
 
     # optionally resume from a checkpoint
     if args.resume:
@@ -335,21 +343,7 @@ def main_worker(gpu, ngpus_per_node, args):
         drop_last=True
     )
     print('DataLoader собрали')
-    
 
-    
-    # train_dataset = moco.GLORYS12_dataset.Glorys12Dataset(csv_file='/app/MoCo/MOCOv3-MNIST/momental files and code/test_file_pathes_dataset.csv',
-    #                         transform1=transforms.Compose(augmentation1),
-    #                         transform2=transforms.Compose(augmentation2))   #moco.loader.TwoCropsTransform(transforms.Compose(augmentation2))                                                                                            transforms.Compose(augmentation2)))
- 
-    # if args.distributed:
-    #     train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset)
-    # else:
-    #     train_sampler = None
-
-    # train_loader = torch.utils.data.DataLoader(
-    #     train_dataset, batch_size=args.batch_size, shuffle= True,
-    #     num_workers=args.workers, pin_memory=True, sampler=train_sampler, drop_last=True)
     # В начале обучения запоминаем время запуска
     start_time = datetime.now()
     time_str = start_time.strftime("%Y%m%d_%H%M%S")
@@ -434,21 +428,21 @@ def train(train_loader, model, optimizer, scaler, summary_writer, epoch, args):
 #     if is_best:
 #         shutil.copyfile(filename, 'model_best.pth.tar')
 
-def save_checkpoint(state, is_best, filename, start_time, checkpoint_dir='/app/MoCo/MOCOv3-MNIST/checkpoints'):
-    # Создаем директорию, если она не существует
-    os.makedirs(checkpoint_dir, exist_ok=True)
+# def save_checkpoint(state, is_best, filename, start_time, checkpoint_dir='/app/MoCo/MOCOv3-MNIST/checkpoints'):
+#     # Создаем директорию, если она не существует
+#     os.makedirs(checkpoint_dir, exist_ok=True)
     
-    # Форматируем время запуска для использования в имени файла
-    time_str = start_time.strftime("%d%m%Y_%H%M%S")
+#     # Форматируем время запуска для использования в имени файла
+#     time_str = start_time.strftime("%d%m%Y_%H%M%S")
     
-    # Определяем имя файла
-    filename = os.path.join(checkpoint_dir, f'checkpoint_{time_str}.pth.tar')
-    torch.save(state, filename)
+#     # Определяем имя файла
+#     filename = os.path.join(checkpoint_dir, f'checkpoint_{time_str}.pth.tar')
+#     torch.save(state, filename)
     
-    # Копируем лучший чекпоинт
-    if is_best:
-        best_filename = os.path.join(checkpoint_dir, f'model_best_{time_str}.pth.tar')
-        shutil.copyfile(filename, best_filename)
+#     # Копируем лучший чекпоинт
+#     if is_best:
+#         best_filename = os.path.join(checkpoint_dir, f'model_best_{time_str}.pth.tar')
+#         shutil.copyfile(filename, best_filename)
         
 class AverageMeter(object):
     """Computes and stores the average and current value"""

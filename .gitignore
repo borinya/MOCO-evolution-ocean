@@ -2,4 +2,9 @@
 *.csv
 checkpoints/
 moco/pycache/
-.vscode
+.vscode/runs
+/ocean_vectors
+__pycache__/
+runs/
+runs_transformer/
+token
