@@ -2,7 +2,6 @@
 *.csv
 checkpoints/
 moco/pycache/
-.vscode/runs
 /ocean_vectors
 __pycache__/
 runs/
