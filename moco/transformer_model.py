@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-
+#adwda
 class OceanTransformer(nn.Module):
     def __init__(self, input_dim=256, num_layers=4, nhead=8, 
                  dim_feedforward=1024, dropout=0.1):
