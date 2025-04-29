@@ -14,9 +14,10 @@ from torch.cuda.amp import GradScaler, autocast
 
 from moco.transformer_model import OceanTransformer
 from moco.transformer_dataset import Glorys12SequenceDataset
-from moco.builder import MoCo_ResNet
 from torchvision.models import resnet50
+import torch.nn as nn
 from functools import partial
+
 
 
 def parse_args():
@@ -93,9 +94,6 @@ def setup_logging(args):
         writer.add_text(f"args/{arg}", str(getattr(args, arg)))
         
     return writer, log_dir
-import torch
-import torch.nn as nn
-from torchvision.models import resnet50
 
 def load_moco_encoder(checkpoint_path):
     # Создаем модифицированную архитектуру ResNet
@@ -141,7 +139,7 @@ def main():
     print(f"Experiment logs saved to: {log_dir}")
     
     # Initialize models
-    encoder = load_encoder(args.checkpoint, device, args.finetune_encoder)
+    encoder = load_moco_encoder(args.checkpoint, device, args.finetune_encoder)
 
     transformer = OceanTransformer(
         input_dim=256,
