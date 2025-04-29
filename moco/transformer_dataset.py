@@ -5,124 +5,221 @@ import pandas as pd
 from torch.utils.data import Dataset
 from concurrent.futures import ThreadPoolExecutor
 from netCDF4 import Dataset as netCDF4_Dataset
+import random
+from datetime import datetime
 
-class Glorys12SequenceDataset(Dataset):
-    def __init__(
-        self,
-        csv_file,
-        sequence_length=60,
-        prediction_horizon=30,
-        predict_differences=False,
-        transform=None,
-        cache_size=512,
-        num_io_workers=20,
-        prefetch_factor=2,
-        random_seed=42
-    ):
-        # Инициализация параметров
-        self.data_frame = pd.read_csv(csv_file)
-        self.file_paths = self.data_frame['File Path'].tolist()
-        self.dates = pd.to_datetime(self.data_frame['Date'])
+class GLORYS12EmbeddingCache:
+    def __init__(self, encoder, device, max_size=1000):
+        self.encoder = encoder
+        self.device = device
+        self.cache = {}
+        self.max_size = max_size
+        self.augmentation_policies = []
+
+    def add_augmentation(self, aug_func):
+        self.augmentation_policies.append(aug_func)
+
+    def __getitem__(self, key):
+        date_str, aug_id = key
+        if key not in self.cache:
+            self._load_and_process(key)
+        return self.cache[key]
+
+    def _load_and_process(self, key):
+        date_str, aug_id = key
+        raw_data = self._load_raw_data(date_str)
         
-        # Временные параметры
+        # Применение аугментаций
+        for aug in self.augmentation_policies:
+            raw_data = aug(raw_data)
+            
+        # Кодирование
+        with torch.no_grad(), torch.cuda.amp.autocast():
+            tensor_data = torch.tensor(raw_data).permute(2,0,1).unsqueeze(0).to(self.device)
+            embedding = self.encoder(tensor_data).squeeze().cpu().numpy()
+            
+        # Обновление кэша
+        if len(self.cache) >= self.max_size:
+            del self.cache[next(iter(self.cache))]
+        self.cache[key] = embedding
+
+    def _load_raw_data(self, date_str):
+        # Реализация загрузки сырых данных по дате
+        # (ваш существующий код загрузки .nc файлов)
+        pass
+
+class TemporalEmbeddingDataset(Dataset):
+    def __init__(self, csv_file, cache, sequence_length=60, prediction_horizon=30):
+        self.metadata = pd.read_csv(csv_file, parse_dates=['Datetime'])
+        self.cache = cache
         self.sequence_length = sequence_length
         self.prediction_horizon = prediction_horizon
-        self.predict_differences = predict_differences
-        self.transform = transform
-
-        # Параметры кэширования и многопоточности
-        self.cache = {}
-        self.cache_size = cache_size
-        self.num_io_workers = num_io_workers
-        self.prefetch_factor = prefetch_factor
-        self.executor = ThreadPoolExecutor(max_workers=num_io_workers)
-        self.pending = {}
-
-        # Конфигурация переменных netCDF
-        self.variables = {
-            'mlotst': (0,),
-            'thetao': (0, 0),
-            'bottomT': (0,),
-            'uo': (0, 0),
-            'vo': (0, 0),
-            'so': (0, 0),
-            'zos': (0,)
-        }
+        
+        # Генерация временнóго индекса
+        self.dates = self.metadata['Datetime'].sort_values().reset_index(drop=True)
+        self.date_to_idx = {date: idx for idx, date in enumerate(self.dates)}
 
     def __len__(self):
-        total_items = len(self.file_paths)
-        return max(0, total_items - self.sequence_length - self.prediction_horizon)
+        return len(self.dates) - self.sequence_length - self.prediction_horizon
 
     def __getitem__(self, idx):
-        if idx >= len(self):
-            raise IndexError()
-            
-        # Загрузка последовательности
+        # Получение временнóго окна
+        start_date = self.dates[idx]
+        end_date = start_date + pd.DateOffset(days=self.sequence_length-1)
+        target_date = end_date + pd.DateOffset(days=self.prediction_horizon)
+        
+        # Получение последовательности эмбеддингов
         sequence = []
-        for i in range(self.sequence_length):
-            item_idx = idx + i
-            if item_idx >= len(self.file_paths):
-                raise IndexError(f"Index {item_idx} out of range")
-                
-            if item_idx in self.cache:
-                data = self.cache[item_idx]
-            else:
-                data = self._load_single_file(item_idx)
-                self._update_cache(item_idx, data)
-            # data = torch.tensor(data, dtype=torch.float32)
-            if self.transform:
-                data = self.transform(data)
-            sequence.append(data)
-
-        # Загрузка целевого поля
-        target_idx = idx + self.sequence_length + self.prediction_horizon - 1
-        if target_idx >= len(self.file_paths):
-            raise IndexError(f"Target index {target_idx} out of range")
+        current_date = start_date
+        for _ in range(self.sequence_length):
+            # Выбор случайной аугментации для каждого элемента последовательности
+            aug_id = random.choice(self.cache.augmentation_ids)
+            key = (current_date.strftime('%Y-%m-%d'), aug_id)
+            sequence.append(self.cache[key])
+            current_date += pd.DateOffset(days=1)
             
-        if target_idx in self.cache:
-            target = self.cache[target_idx]
-        else:
-            target = self._load_single_file(target_idx)
-            self._update_cache(target_idx, target)
+        # Получение целевого эмбеддинга
+        target_key = (target_date.strftime('%Y-%m-%d'), 'no_aug')
+        target = self.cache[target_key]
 
-        target = torch.tensor(target, dtype=torch.float32)
+        return np.stack(sequence), target
+
+def create_spatial_augmentations():
+    return [
+        lambda x: x,
+        lambda x: np.flip(x, axis=0).copy(),
+        lambda x: np.flip(x, axis=1).copy(),
+        lambda x: np.rot90(x, k=1).copy(),
+        lambda x: np.rot90(x, k=2).copy(),
+        lambda x: np.rot90(x, k=3).copy()
+    ]
+
+
+# import os
+# import numpy as np
+# import torch
+# import pandas as pd
+# from torch.utils.data import Dataset
+# from concurrent.futures import ThreadPoolExecutor
+# from netCDF4 import Dataset as netCDF4_Dataset
+
+# class Glorys12SequenceDataset(Dataset):
+#     def __init__(
+#         self,
+#         csv_file,
+#         sequence_length=60,
+#         prediction_horizon=30,
+#         predict_differences=False,
+#         transform=None,
+#         cache_size=512,
+#         num_io_workers=20,
+#         prefetch_factor=2,
+#         random_seed=42
+#     ):
+#         # Инициализация параметров
+#         self.data_frame = pd.read_csv(csv_file)
+#         self.file_paths = self.data_frame['File Path'].tolist()
+#         self.dates = pd.to_datetime(self.data_frame['Date'])
         
-        if self.predict_differences:
-            target -= sequence[-1]
+#         # Временные параметры
+#         self.sequence_length = sequence_length
+#         self.prediction_horizon = prediction_horizon
+#         self.predict_differences = predict_differences
+#         self.transform = transform
 
-        return torch.stack(sequence), target
+#         # Параметры кэширования и многопоточности
+#         self.cache = {}
+#         self.cache_size = cache_size
+#         self.num_io_workers = num_io_workers
+#         self.prefetch_factor = prefetch_factor
+#         self.executor = ThreadPoolExecutor(max_workers=num_io_workers)
+#         self.pending = {}
 
-    def _load_single_file(self, idx):
-        file_path = self.file_paths[idx]
-        data_array = np.zeros((len(self.variables), 349, 661), dtype=np.float32)
+#         # Конфигурация переменных netCDF
+#         self.variables = {
+#             'mlotst': (0,),
+#             'thetao': (0, 0),
+#             'bottomT': (0,),
+#             'uo': (0, 0),
+#             'vo': (0, 0),
+#             'so': (0, 0),
+#             'zos': (0,)
+#         }
+
+#     def __len__(self):
+#         total_items = len(self.file_paths)
+#         return max(0, total_items - self.sequence_length - self.prediction_horizon)
+
+#     def __getitem__(self, idx):
+#         if idx >= len(self):
+#             raise IndexError()
+            
+#         # Загрузка последовательности
+#         sequence = []
+#         for i in range(self.sequence_length):
+#             item_idx = idx + i
+#             if item_idx >= len(self.file_paths):
+#                 raise IndexError(f"Index {item_idx} out of range")
+                
+#             if item_idx in self.cache:
+#                 data = self.cache[item_idx]
+#             else:
+#                 data = self._load_single_file(item_idx)
+#                 self._update_cache(item_idx, data)
+#             # data = torch.tensor(data, dtype=torch.float32)
+#             if self.transform:
+#                 data = self.transform(data)
+#             sequence.append(data)
+
+#         # Загрузка целевого поля
+#         target_idx = idx + self.sequence_length + self.prediction_horizon - 1
+#         if target_idx >= len(self.file_paths):
+#             raise IndexError(f"Target index {target_idx} out of range")
+            
+#         if target_idx in self.cache:
+#             target = self.cache[target_idx]
+#         else:
+#             target = self._load_single_file(target_idx)
+#             self._update_cache(target_idx, target)
+
+#         target = torch.tensor(target, dtype=torch.float32)
         
-        try:
-            with netCDF4_Dataset(file_path, 'r') as ds:
-                for i, (var_name, index) in enumerate(self.variables.items()):
-                    if var_name in ds.variables:
-                        var = ds[var_name]
-                        variable_data = np.array(var[index], dtype=np.float32)
-                        variable_data = np.squeeze(variable_data)
-                        variable_data = np.where(
-                            variable_data == var._FillValue, 
-                            np.nan, 
-                            variable_data
-                        )
-                        data_array[i] = variable_data
+#         if self.predict_differences:
+#             target -= sequence[-1]
 
-                result = data_array.transpose((1, 2, 0))
-                return np.nan_to_num(result, nan=0.0)
-        except Exception as e:
-            print(f"Error loading {file_path}: {str(e)}")
-            raise
+#         return torch.stack(sequence), target
 
-    def _update_cache(self, idx, data):
-        if len(self.cache) >= self.cache_size:
-            del self.cache[next(iter(self.cache))]
-        self.cache[idx] = data
+#     def _load_single_file(self, idx):
+#         file_path = self.file_paths[idx]
+#         data_array = np.zeros((len(self.variables), 349, 661), dtype=np.float32)
+        
+#         try:
+#             with netCDF4_Dataset(file_path, 'r') as ds:
+#                 for i, (var_name, index) in enumerate(self.variables.items()):
+#                     if var_name in ds.variables:
+#                         var = ds[var_name]
+#                         variable_data = np.array(var[index], dtype=np.float32)
+#                         variable_data = np.squeeze(variable_data)
+#                         variable_data = np.where(
+#                             variable_data == var._FillValue, 
+#                             np.nan, 
+#                             variable_data
+#                         )
+#                         data_array[i] = variable_data
 
-    def __del__(self):
-        self.executor.shutdown()
+#                 result = data_array.transpose((1, 2, 0))
+#                 return np.nan_to_num(result, nan=0.0)
+#         except Exception as e:
+#             print(f"Error loading {file_path}: {str(e)}")
+#             raise
+
+#     def _update_cache(self, idx, data):
+#         if len(self.cache) >= self.cache_size:
+#             del self.cache[next(iter(self.cache))]
+#         self.cache[idx] = data
+
+#     def __del__(self):
+#         self.executor.shutdown()
 
 # # Пример использования
 # dataset = Glorys12SequenceDataset(

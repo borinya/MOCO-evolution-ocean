@@ -1,3 +1,5 @@
+
+
 #!/usr/bin/env python
 import argparse
 import os
@@ -91,23 +93,44 @@ def setup_logging(args):
         writer.add_text(f"args/{arg}", str(getattr(args, arg)))
         
     return writer, log_dir
+import torch
+import torch.nn as nn
+from torchvision.models import resnet50
 
-def load_encoder(checkpoint_path, device, finetune=False):
-    encoder = MoCo_ResNet(
-        partial(resnet50, zero_init_residual=True), 
-        dim=256, mlp_dim=4096, T=1.0
-    ).base_encoder
+def load_moco_encoder(checkpoint_path):
+    # Создаем модифицированную архитектуру ResNet
+    encoder = resnet50(pretrained=False)
     
-    # Добавить weights_only=False для подавления предупреждения
-    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=True)
-    state_dict = {k.replace("module.", ""): v for k, v in checkpoint['state_dict'].items()}
-    encoder.load_state_dict(state_dict, strict=False)
+    # Модификация первого сверточного слоя для 7 каналов
+    encoder.conv1 = nn.Conv2d(7, 64, kernel_size=7, stride=2, padding=3, bias=False)
     
-    if not finetune:
-        for param in encoder.parameters():
-            param.requires_grad = False
-            
-    return encoder.to(device)
+    # Замена BatchNorm слоев на Identity
+    def replace_batchnorm(module):
+        for name, child in module.named_children():
+            if isinstance(child, nn.BatchNorm2d):
+                setattr(module, name, nn.Identity())
+            else:
+                replace_batchnorm(child)
+    
+    replace_batchnorm(encoder)
+    
+    # Загрузка весов из чекпоинта
+    checkpoint = torch.load(checkpoint_path, map_location='cpu')
+    
+    # Извлечение весов только для базового энкодера
+    state_dict = {}
+    for k, v in checkpoint['state_dict'].items():
+        if k.startswith('base_encoder.'):
+            state_dict[k[len('base_encoder.'):]] = v
+    
+    # Загрузка весов в модель
+    encoder.load_state_dict(state_dict, strict=True)
+    
+    # Установка в eval режим
+    encoder.eval()
+    
+    return encoder
+
 
 def main():
     args = parse_args()
@@ -175,8 +198,8 @@ def main():
     
     # Training setup
     criterion = torch.nn.MSELoss()
-    # scaler = GradScaler(enabled=args.amp)
-    scaler = torch.amp.GradScaler(device_type='cuda', enabled=args.amp)
+    scaler = GradScaler(enabled=args.amp)
+    # scaler = torch.amp.GradScaler(device_type='cuda', enabled=args.amp)
     global_step = 0
     
     for epoch in range(args.epochs):
@@ -247,7 +270,7 @@ def main():
                 'args': vars(args),
                 'loss': avg_loss
             }
-            save_path = os.path.join(log_dir, f"checkpoint_epoch_{epoch+1}.pth")
+            save_path = os.path.join(log_dir, f"c heckpoint_epoch_{epoch+1}.pth")
             torch.save(checkpoint, save_path)
             print(f"Saved checkpoint to {save_path}")
     
