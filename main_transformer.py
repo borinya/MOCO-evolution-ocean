@@ -41,7 +41,7 @@ def parse_args():
     
     # Параметры обучения
     parser.add_argument('--epochs', type=int, default=100)
-    parser.add_argument('--batch-size', type=int, default=4)
+    parser.add_argument('--batch-size', type=int, default=32)
     parser.add_argument('--lr', type=float, default=3e-4,
                       help='Base learning rate')
     parser.add_argument('--encoder-lr', type=float, default=1e-5,
@@ -62,7 +62,7 @@ def parse_args():
                       help='Predict differences instead of absolute values')
     parser.add_argument('--cache-size', type=int, default=512,
                       help='Dataset cache size')
-    parser.add_argument('--num-workers', type=int, default=0,  # Уменьшено для избежания ошибок SHM
+    parser.add_argument('--num-workers', type=int, default=12,  # Уменьшено для избежания ошибок SHM
                       help='Number of workers for DataLoader')
     
     # Управление экспериментом
@@ -149,7 +149,7 @@ class PositionalEncoding(nn.Module):
     def __init__(self, d_model, max_len=180):
         super().__init__()
         position = torch.arange(max_len).unsqueeze(1)
-        div_term = torch.exp(torch.arange(0, d_model, 2) * (-math.log(10000.0) / d_model)
+        div_term = torch.exp(torch.arange(0, d_model, 2) * (-math.log(10000.0) / d_model))
         pe = torch.zeros(max_len, 1, d_model)
         pe[:, 0, 0::2] = torch.sin(position * div_term)
         pe[:, 0, 1::2] = torch.cos(position * div_term)
