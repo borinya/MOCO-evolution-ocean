@@ -36,7 +36,7 @@ def parse_args():
                       help='Feedforward dimension')
     parser.add_argument('--transformer-dropout', type=float, default=0.1,
                       help='Transformer dropout rate')
-    parser.add_argument('--embedding-dim', type=int, default=512,
+    parser.add_argument('--embedding-dim', type=int, default=256,  # Изменено на 256
                       help='Dimension of transformer embeddings')
     
     # Параметры обучения
@@ -95,9 +95,18 @@ def setup_logging(args):
         
     return writer, log_dir
 
+def replace_batchnorm_with_identity(module):
+    """Рекурсивно заменяет все BatchNorm слои на Identity"""
+    for name, child in module.named_children():
+        if isinstance(child, nn.BatchNorm2d):
+            setattr(module, name, nn.Identity())
+        else:
+            replace_batchnorm_with_identity(child)
+
 def load_moco_encoder(checkpoint_path, device, finetune=False):
     """
     Загрузка предобученного энкодера MoCo с исправлением размерностей
+    и проекцией в 256-мерное пространство
     """
     # Создаем базовый энкодер
     encoder = resnet50(weights=None)
@@ -106,14 +115,25 @@ def load_moco_encoder(checkpoint_path, device, finetune=False):
     encoder.conv1 = nn.Conv2d(7, 64, kernel_size=7, stride=2, padding=3, bias=False)
     
     # Удаление BatchNorm слоев
-    def replace_batchnorm(module):
-        for name, child in module.named_children():
-            if isinstance(child, nn.BatchNorm2d):
-                setattr(module, name, nn.Identity())
-            else:
-                replace_batchnorm(child)
+    replace_batchnorm_with_identity(encoder)
     
-    replace_batchnorm(encoder)
+    # Заменяем avgpool и fc на Identity
+    encoder.avgpool = nn.Identity()
+    encoder.fc = nn.Identity()
+    
+    # Проекция в 256-мерное пространство
+    projection_head = nn.Sequential(
+        nn.Linear(2048, 2048),
+        nn.ReLU(inplace=True),
+        nn.Linear(2048, 256)
+    )
+    
+    # Комбинированная модель
+    model = nn.Sequential(
+        encoder,
+        nn.Flatten(),
+        projection_head
+    )
     
     # Загрузка состояния
     checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=True)
@@ -122,27 +142,27 @@ def load_moco_encoder(checkpoint_path, device, finetune=False):
     state_dict = {}
     for k, v in checkpoint['state_dict'].items():
         if 'base_encoder' in k:
-            # Нормализация ключей
             new_key = k.replace('module.base_encoder.', '').replace('base_encoder.', '')
             state_dict[new_key] = v
+        elif 'projection_head' in k:
+            new_key = k.replace('module.projection_head.', '').replace('projection_head.', '')
+            # Добавляем префикс для проекционного слоя
+            state_dict['2.' + new_key] = v
     
     # Загрузка весов
-    missing, unexpected = encoder.load_state_dict(state_dict, strict=False)
+    missing, unexpected = model.load_state_dict(state_dict, strict=False)
     print(f"Loaded encoder: missing={len(missing)}, unexpected={len(unexpected)}")
     
-    # Удаление последнего слоя (projection head)
-    encoder = torch.nn.Sequential(*list(encoder.children())[:-1])
-    
     # Режим обучения
-    encoder = encoder.to(device)
+    model = model.to(device)
     if not finetune:
-        encoder.eval()
-        for param in encoder.parameters():
+        model.eval()
+        for param in model.parameters():
             param.requires_grad = False
     else:
-        encoder.train()
+        model.train()
     
-    return encoder
+    return model
 
 class PositionalEncoding(nn.Module):
     """Позиционное кодирование для трансформера"""
@@ -161,7 +181,7 @@ class PositionalEncoding(nn.Module):
 class OceanTransformer(nn.Module):
     """Улучшенная архитектура трансформера"""
     def __init__(self, input_dim=256, num_layers=4, nhead=8, 
-                 dim_feedforward=1024, dropout=0.1, d_model=512, 
+                 dim_feedforward=1024, dropout=0.1, d_model=256,  # Все размерности 256
                  output_dim=7, spatial_output=False):
         super().__init__()
         self.spatial_output = spatial_output
@@ -182,20 +202,12 @@ class OceanTransformer(nn.Module):
         )
         self.transformer = nn.TransformerEncoder(encoder_layer, num_layers)
         
-        if spatial_output:
-            # Декодер для пространственных данных
-            self.decoder = nn.Sequential(
-                nn.Linear(d_model, d_model * 4),
-                nn.ReLU(),
-                nn.Linear(d_model * 4, 349 * 661 * output_dim)
-            )
-        else:
-            # Регрессионная головка для среднего значения
-            self.regressor = nn.Sequential(
-                nn.Linear(d_model, d_model//2),
-                nn.ReLU(),
-                nn.Linear(d_model//2, output_dim)
-            )
+        # Прогнозирование на 30 дней вперед
+        self.temporal_decoder = nn.Sequential(
+            nn.Linear(d_model, d_model * 4),
+            nn.ReLU(),
+            nn.Linear(d_model * 4, output_dim * 30)
+        )
 
     def forward(self, x):
         # x: [batch, seq_len, features]
@@ -203,15 +215,16 @@ class OceanTransformer(nn.Module):
         x = x.permute(1, 0, 2)  # [seq_len, batch, features]
         x = self.pos_encoder(x)
         x = self.transformer(x)
-        x = x[-1]  # Берем последний временной шаг
+        x = x.permute(1, 0, 2)  # [batch, seq_len, features]
         
-        if self.spatial_output:
-            # Декодирование в пространственный тензор
-            x = self.decoder(x)
-            x = x.view(x.size(0), 7, 349, 661)  # [batch, channels, height, width]
-            return x.permute(0, 2, 3, 1)  # [batch, height, width, channels]
-        else:
-            return self.regressor(x)
+        # Берем последний вектор последовательности
+        last_vector = x[:, -1, :]
+        
+        # Прогнозируем 30 дней
+        prediction = self.temporal_decoder(last_vector)
+        prediction = prediction.view(-1, 30, 7)  # [batch, 30, 7]
+        
+        return prediction
 
 def main():
     args = parse_args()
@@ -232,18 +245,14 @@ def main():
         finetune=args.finetune_encoder
     )
     
-    # Определяем режим вывода
-    spatial_output = not args.predict_mean
-    
     transformer = OceanTransformer(
-        input_dim=2048,  # ResNet50 output features
+        input_dim=256,  # Энкодер теперь выдает 256-мерные векторы
         num_layers=args.transformer_layers,
         nhead=args.transformer_heads,
         dim_feedforward=args.transformer_dim_ff,
         dropout=args.transformer_dropout,
         d_model=args.embedding_dim,
-        output_dim=7,
-        spatial_output=spatial_output
+        output_dim=7
     ).to(device)
     
     # Оптимизатор
@@ -289,7 +298,7 @@ def main():
         train_dataset,
         batch_size=args.batch_size,
         shuffle=True,
-        num_workers=min(args.num_workers, 2),  # Ограничиваем workers
+        num_workers=args.num_workers,  # Ограничиваем workers
         pin_memory=True,
         prefetch_factor=2 if args.num_workers > 0 else None
     )
@@ -303,7 +312,7 @@ def main():
     
     # Обучение
     criterion = torch.nn.MSELoss()
-    scaler = GradScaler(device_type='cuda', enabled=args.amp)
+    scaler = GradScaler(enabled=args.amp)
     global_step = 0
     best_val_loss = float('inf')
     
@@ -312,17 +321,14 @@ def main():
         transformer.train()
         if args.finetune_encoder:
             encoder.train()
+        else:
+            encoder.eval()
         
         train_loss = 0.0
         optimizer.zero_grad()
         
         for step, (sequences, targets) in enumerate(train_loader):
             sequences = sequences.to(device, non_blocking=True)
-            
-            # Обработка целей в зависимости от режима
-            if args.predict_mean:
-                # Усредняем по пространственным измерениям
-                targets = targets.mean(dim=(1, 2))  # [batch, 7]
             targets = targets.to(device, non_blocking=True)
             
             # Извлечение признаков
@@ -341,6 +347,15 @@ def main():
             # Прогнозирование трансформером
             with autocast(device_type='cuda', enabled=args.amp):
                 predictions = transformer(features)
+                
+                # Изменение формы targets для соответствия predictions
+                if args.predict_mean:
+                    # Усредняем по пространственным измерениям
+                    targets = targets.mean(dim=(2, 3))  # [batch, 30, 7]
+                else:
+                    # Для пространственных данных нужно изменить форму
+                    targets = targets.view(batch_size, 30, -1)
+                
                 loss = criterion(predictions, targets)
                 loss = loss / args.grad_accum_steps
             
@@ -352,6 +367,8 @@ def main():
                 if args.grad_clip > 0:
                     scaler.unscale_(optimizer)
                     torch.nn.utils.clip_grad_norm_(transformer.parameters(), args.grad_clip)
+                    if args.finetune_encoder:
+                        torch.nn.utils.clip_grad_norm_(encoder.parameters(), args.grad_clip)
                 
                 scaler.step(optimizer)
                 scaler.update()
@@ -371,9 +388,6 @@ def main():
         with torch.no_grad():
             for sequences, targets in val_loader:
                 sequences = sequences.to(device)
-                
-                if args.predict_mean:
-                    targets = targets.mean(dim=(1, 2))
                 targets = targets.to(device)
                 
                 # Извлечение признаков
@@ -384,6 +398,13 @@ def main():
                 
                 # Прогнозирование
                 predictions = transformer(features)
+                
+                # Подготовка целей
+                if args.predict_mean:
+                    targets = targets.mean(dim=(2, 3))  # [batch, 30, 7]
+                else:
+                    targets = targets.view(batch_size, 30, -1)
+                
                 loss = criterion(predictions, targets)
                 val_loss += loss.item()
         
