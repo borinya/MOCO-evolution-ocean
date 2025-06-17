@@ -10,7 +10,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.tensorboard import SummaryWriter
-from torch.cuda.amp import GradScaler, autocast
+from torch.amp import GradScaler, autocast
 import torchvision.transforms as transforms
 from torchvision.models import resnet50
 
@@ -62,7 +62,7 @@ def parse_args():
                       help='Predict differences instead of absolute values')
     parser.add_argument('--cache-size', type=int, default=512,
                       help='Dataset cache size')
-    parser.add_argument('--num-workers', type=int, default=4,
+    parser.add_argument('--num-workers', type=int, default=0,  # Уменьшено для избежания ошибок SHM
                       help='Number of workers for DataLoader')
     
     # Управление экспериментом
@@ -78,6 +78,8 @@ def parse_args():
                       help='Validation set fraction')
     parser.add_argument('--gpu', type=int, default=0,
                       help='GPU index to use (default: 0)')
+    parser.add_argument('--predict-mean', action='store_true',
+                      help='Predict mean value instead of full spatial field')
     
     return parser.parse_args()
 
@@ -98,7 +100,7 @@ def load_moco_encoder(checkpoint_path, device, finetune=False):
     Загрузка предобученного энкодера MoCo с исправлением размерностей
     """
     # Создаем базовый энкодер
-    encoder = resnet50(pretrained=False)
+    encoder = resnet50(weights=None)
     
     # Модификация первого слоя для 7 каналов
     encoder.conv1 = nn.Conv2d(7, 64, kernel_size=7, stride=2, padding=3, bias=False)
@@ -114,7 +116,7 @@ def load_moco_encoder(checkpoint_path, device, finetune=False):
     replace_batchnorm(encoder)
     
     # Загрузка состояния
-    checkpoint = torch.load(checkpoint_path, map_location='cpu')
+    checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=True)
     
     # Автоматическое определение префикса ключей
     state_dict = {}
@@ -147,7 +149,7 @@ class PositionalEncoding(nn.Module):
     def __init__(self, d_model, max_len=180):
         super().__init__()
         position = torch.arange(max_len).unsqueeze(1)
-        div_term = torch.exp(torch.arange(0, d_model, 2) * (-math.log(10000.0) / d_model))
+        div_term = torch.exp(torch.arange(0, d_model, 2) * (-math.log(10000.0) / d_model)
         pe = torch.zeros(max_len, 1, d_model)
         pe[:, 0, 0::2] = torch.sin(position * div_term)
         pe[:, 0, 1::2] = torch.cos(position * div_term)
@@ -159,8 +161,10 @@ class PositionalEncoding(nn.Module):
 class OceanTransformer(nn.Module):
     """Улучшенная архитектура трансформера"""
     def __init__(self, input_dim=256, num_layers=4, nhead=8, 
-                 dim_feedforward=1024, dropout=0.1, d_model=512):
+                 dim_feedforward=1024, dropout=0.1, d_model=512, 
+                 output_dim=7, spatial_output=False):
         super().__init__()
+        self.spatial_output = spatial_output
         
         # Проекция признаков в пространство трансформера
         self.input_proj = nn.Linear(input_dim, d_model)
@@ -178,12 +182,20 @@ class OceanTransformer(nn.Module):
         )
         self.transformer = nn.TransformerEncoder(encoder_layer, num_layers)
         
-        # Регрессионная головка
-        self.regressor = nn.Sequential(
-            nn.Linear(d_model, d_model//2),
-            nn.ReLU(),
-            nn.Linear(d_model//2, 1)
-        )
+        if spatial_output:
+            # Декодер для пространственных данных
+            self.decoder = nn.Sequential(
+                nn.Linear(d_model, d_model * 4),
+                nn.ReLU(),
+                nn.Linear(d_model * 4, 349 * 661 * output_dim)
+            )
+        else:
+            # Регрессионная головка для среднего значения
+            self.regressor = nn.Sequential(
+                nn.Linear(d_model, d_model//2),
+                nn.ReLU(),
+                nn.Linear(d_model//2, output_dim)
+            )
 
     def forward(self, x):
         # x: [batch, seq_len, features]
@@ -192,12 +204,20 @@ class OceanTransformer(nn.Module):
         x = self.pos_encoder(x)
         x = self.transformer(x)
         x = x[-1]  # Берем последний временной шаг
-        return self.regressor(x)
+        
+        if self.spatial_output:
+            # Декодирование в пространственный тензор
+            x = self.decoder(x)
+            x = x.view(x.size(0), 7, 349, 661)  # [batch, channels, height, width]
+            return x.permute(0, 2, 3, 1)  # [batch, height, width, channels]
+        else:
+            return self.regressor(x)
 
 def main():
     args = parse_args()
     
     # Выбор GPU
+    torch.cuda.set_device(args.gpu)
     device = torch.device(f"cuda:{args.gpu}" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
     
@@ -212,13 +232,18 @@ def main():
         finetune=args.finetune_encoder
     )
     
+    # Определяем режим вывода
+    spatial_output = not args.predict_mean
+    
     transformer = OceanTransformer(
         input_dim=2048,  # ResNet50 output features
         num_layers=args.transformer_layers,
         nhead=args.transformer_heads,
         dim_feedforward=args.transformer_dim_ff,
         dropout=args.transformer_dropout,
-        d_model=args.embedding_dim
+        d_model=args.embedding_dim,
+        output_dim=7,
+        spatial_output=spatial_output
     ).to(device)
     
     # Оптимизатор
@@ -234,7 +259,6 @@ def main():
     optimizer = optim.AdamW(params, weight_decay=args.weight_decay)
     
     # Нормализация данных (примерные значения)
-    # Исправленные значения для 7 каналов
     means = np.array([1.673, 33.375, 32.584, 11.152, 0.025, -0.009, 0.074])
     stds = np.array([0.125, 0.543, 0.621, 0.832, 0.015, 0.012, 0.042])
     
@@ -260,24 +284,26 @@ def main():
         full_dataset, [train_size, val_size]
     )
     
+    # DataLoader с уменьшенным числом workers
     train_loader = torch.utils.data.DataLoader(
         train_dataset,
         batch_size=args.batch_size,
         shuffle=True,
-        num_workers=args.num_workers,
-        pin_memory=True
+        num_workers=min(args.num_workers, 2),  # Ограничиваем workers
+        pin_memory=True,
+        prefetch_factor=2 if args.num_workers > 0 else None
     )
     
     val_loader = torch.utils.data.DataLoader(
         val_dataset,
         batch_size=args.batch_size,
         shuffle=False,
-        num_workers=args.num_workers
+        num_workers=min(args.num_workers, 2)   # Ограничиваем workers
     )
     
     # Обучение
     criterion = torch.nn.MSELoss()
-    scaler = GradScaler(enabled=args.amp)
+    scaler = GradScaler(device_type='cuda', enabled=args.amp)
     global_step = 0
     best_val_loss = float('inf')
     
@@ -291,15 +317,17 @@ def main():
         optimizer.zero_grad()
         
         for step, (sequences, targets) in enumerate(train_loader):
-            # Проверка размерностей перед обработкой
-            print(f"Sequences shape: {sequences.shape}, Targets shape: {targets.shape}")
-            
             sequences = sequences.to(device, non_blocking=True)
+            
+            # Обработка целей в зависимости от режима
+            if args.predict_mean:
+                # Усредняем по пространственным измерениям
+                targets = targets.mean(dim=(1, 2))  # [batch, 7]
             targets = targets.to(device, non_blocking=True)
             
             # Извлечение признаков
             with torch.set_grad_enabled(args.finetune_encoder):
-                with autocast(enabled=args.amp):
+                with autocast(device_type='cuda', enabled=args.amp):
                     # Переформатирование: [batch, seq, C, H, W] -> [batch*seq, C, H, W]
                     batch_size, seq_len, C, H, W = sequences.shape
                     features = sequences.view(-1, C, H, W)
@@ -307,18 +335,13 @@ def main():
                     # Пропуск через энкодер
                     features = encoder(features)
                     
-                    # Проверка размерности выхода энкодера
-                    print(f"Encoder output shape: {features.shape}")
-                    
                     # Изменение view для совместимости с трансформером
                     features = features.view(batch_size, seq_len, -1)
             
             # Прогнозирование трансформером
-            with autocast(enabled=args.amp):
+            with autocast(device_type='cuda', enabled=args.amp):
                 predictions = transformer(features)
-                # Проверка размерностей перед вычислением потерь
-                print(f"Predictions shape: {predictions.shape}, Targets shape: {targets.shape}")
-                loss = criterion(predictions.squeeze(), targets)
+                loss = criterion(predictions, targets)
                 loss = loss / args.grad_accum_steps
             
             # Обратное распространение с mixed precision
@@ -348,6 +371,9 @@ def main():
         with torch.no_grad():
             for sequences, targets in val_loader:
                 sequences = sequences.to(device)
+                
+                if args.predict_mean:
+                    targets = targets.mean(dim=(1, 2))
                 targets = targets.to(device)
                 
                 # Извлечение признаков
@@ -358,7 +384,7 @@ def main():
                 
                 # Прогнозирование
                 predictions = transformer(features)
-                loss = criterion(predictions.squeeze(), targets)
+                loss = criterion(predictions, targets)
                 val_loss += loss.item()
         
         # Логирование
@@ -383,7 +409,8 @@ def main():
                 'val_loss': avg_val_loss,
                 'args': vars(args)
             }
-            torch.save(checkpoint, os.path.join(log_dir, "best_model.pth"))
+            save_path = os.path.join(log_dir, "best_model.pth")
+            torch.save(checkpoint, save_path)
             print(f"Saved best model with val loss: {avg_val_loss:.4f}")
         
         # Периодическое сохранение
