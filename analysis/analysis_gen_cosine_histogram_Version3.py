@@ -6,12 +6,11 @@ from sklearn.metrics.pairwise import cosine_similarity
 
 def load_features(feature_dir):
     npy_files = sorted(glob.glob(os.path.join(feature_dir, '*.npy')))
-    dates = [os.path.splitext(os.path.basename(f))[0] for f in npy_files]
     feats = [np.load(f) for f in npy_files]
-    return np.array(feats), dates
+    return np.array(feats)
 
 def cosine_histogram(feature_dir, out_png='cosine_histogram.png'):
-    feats, dates = load_features(feature_dir)
+    feats = load_features(feature_dir)
     cosines = []
     for i in range(1, len(feats)):
         sim = cosine_similarity(feats[i-1].reshape(1, -1), feats[i].reshape(1, -1))[0][0]
@@ -24,7 +23,6 @@ def cosine_histogram(feature_dir, out_png='cosine_histogram.png'):
     plt.tight_layout()
     plt.savefig(out_png)
     plt.close()
-    print(f"Cosine histogram saved to {out_png}")
 
 if __name__ == '__main__':
     import argparse

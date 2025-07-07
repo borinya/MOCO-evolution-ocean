@@ -6,7 +6,8 @@ import umap
 
 def load_features(feature_dir):
     npy_files = sorted(glob.glob(os.path.join(feature_dir, '*.npy')))
-    dates = [os.path.splitext(os.path.basename(f))[0] for f in npy_files]
+    # Извлекаем дату из имени файла, например: '0_1993-01-01_features.npy' -> '1993-01-01'
+    dates = [os.path.basename(f).split('_')[1] for f in npy_files]
     feats = [np.load(f) for f in npy_files]
     return np.array(feats), dates
 
@@ -26,12 +27,13 @@ def make_umap_trajectory_plot(feature_dir, out_png='umap_trajectory.png'):
     plt.tight_layout()
     plt.savefig(out_png)
     plt.close()
-    print(f"UMAP trajectory plot saved to {out_png}")
+    print(f"UMAP trajectory plot saved to {out_png}") 
+
 
 if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument('--feature_dir', type=str, required=True)
+    parser.add_argument('--feature_dir', type=str,  required=False, default= '/app/MoCo/MOCOv3-MNIST/features_glorys12_moco256/2025-07-07_moco256_20250216_141630_checkpoint_0202')
     parser.add_argument('--out', type=str, default='umap_trajectory.png')
     args = parser.parse_args()
     make_umap_trajectory_plot(args.feature_dir, args.out)

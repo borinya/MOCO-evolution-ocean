@@ -1,0 +1,1 @@
+Silhouette score for KMeans(10): 0.290
