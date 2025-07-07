@@ -108,7 +108,7 @@ def load_moco_encoder(checkpoint_path, device, finetune=False):
     Загрузка предобученного энкодера MoCo с исправлением размерностей
     и проекцией в 256-мерное пространство
     """
-    # Создаем базовый энкодер
+    # Создаем базовый энкодер ResNet50
     encoder = resnet50(weights=None)
     
     # Модификация первого слоя для 7 каналов
@@ -117,11 +117,11 @@ def load_moco_encoder(checkpoint_path, device, finetune=False):
     # Удаление BatchNorm слоев
     replace_batchnorm_with_identity(encoder)
     
-    # Заменяем avgpool и fc на Identity
+    # Удаляем avgpool и fc слои
     encoder.avgpool = nn.Identity()
     encoder.fc = nn.Identity()
     
-    # Проекция в 256-мерное пространство
+    # Добавляем проекционную головку как в MoCo
     projection_head = nn.Sequential(
         nn.Linear(2048, 2048),
         nn.ReLU(inplace=True),
@@ -141,9 +141,11 @@ def load_moco_encoder(checkpoint_path, device, finetune=False):
     # Автоматическое определение префикса ключей
     state_dict = {}
     for k, v in checkpoint['state_dict'].items():
+        # Обрабатываем base_encoder
         if 'base_encoder' in k:
             new_key = k.replace('module.base_encoder.', '').replace('base_encoder.', '')
             state_dict[new_key] = v
+        # Обрабатываем projection_head
         elif 'projection_head' in k:
             new_key = k.replace('module.projection_head.', '').replace('projection_head.', '')
             # Добавляем префикс для проекционного слоя
@@ -345,20 +347,22 @@ def main():
                     features = features.view(batch_size, seq_len, -1)
             
             # Прогнозирование трансформером
-            with autocast(device_type='cuda', enabled=args.amp):
-                predictions = transformer(features)
-                
-                # Изменение формы targets для соответствия predictions
-                if args.predict_mean:
-                    # Усредняем по пространственным измерениям
-                    targets = targets.mean(dim=(2, 3))  # [batch, 30, 7]
-                else:
-                    # Для пространственных данных нужно изменить форму
-                    targets = targets.view(batch_size, 30, -1)
-                
-                loss = criterion(predictions, targets)
-                loss = loss / args.grad_accum_steps
+            # with autocast(device_type='cuda', enabled=args.amp):
+            predictions = transformer(features)
             
+            # Изменение формы targets для соответствия predictions
+            if args.predict_mean:
+                # Усредняем по пространственным измерениям
+                # Изменяем размерность: [batch, 30, 7, H, W] -> [batch, 30, 7]
+                targets = targets.mean(dim=(3, 4))
+            else:
+                # Для пространственных данных нужно изменить форму
+                # [batch, 30, 7, H, W] -> [batch, 30, 7*H*W]
+                targets = targets.view(batch_size, 30, -1)
+            
+            loss = criterion(predictions, targets)
+            loss = loss / args.grad_accum_steps
+        
             # Обратное распространение с mixed precision
             scaler.scale(loss).backward()
             
