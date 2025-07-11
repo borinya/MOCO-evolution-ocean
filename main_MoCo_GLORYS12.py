@@ -133,6 +133,12 @@ parser.add_argument('--crop-min', default=0.08, type=float,
 # geo_channels default 7))
 parser.add_argument('--geo-channels', default=7, type=int,
                     help='nomber of input data channels (default: 7)')
+parser.add_argument('--delta-days-positive', default=8, type=int,
+                    help='максимальное расстояние для позитивных пар (default: 8)')
+parser.add_argument('--delta-days-negative', default=45, type=int,
+                    help='минимальное расстояние для негативных пар (default: 45)')
+parser.add_argument('--p-positive', default=0.5, type=float,
+                    help='вероятность положительной пары в батче (default: 0.5)')
 
 def replace_batchnorm_with_identity(model):
     for name, module in model.named_children():
@@ -330,7 +336,10 @@ def main_worker(gpu, ngpus_per_node, args):
         num_io_workers=args.io_workers,
         cache_size=args.cache_size,
         transform1=transforms.Compose(augmentation1),
-        transform2=transforms.Compose(augmentation2)
+        transform2=transforms.Compose(augmentation2),
+        delta_days_positive=args.delta_days_positive,  # NEW
+        delta_days_negative=args.delta_days_negative,  # NEW
+        p_positive=args.p_positive   
     )
     print('dataset собрали')
     # DataLoader с увеличенной производительностью

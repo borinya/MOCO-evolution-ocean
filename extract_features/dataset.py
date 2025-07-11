@@ -61,18 +61,16 @@ class Glorys12Dataset(Dataset):
     def __len__(self):
         return len(self.file_paths)
 
-def __getitem__(self, idx):
-    close_idx = self._random_close_idx(idx)
-    self._prefetch_adjacent(idx)
-    self._prefetch_adjacent(close_idx)
-    data_array1 = self._get_cached_data(idx)
-    data_array2 = self._get_cached_data(close_idx)
-    # Получаем дату из датафрейма:
-    date_str = str(self.data_frame.iloc[idx]['Date']) if 'Date' in self.data_frame.columns else ""
-    if self.transform1 and self.transform2:
+    def __getitem__(self, idx):
+        close_idx = self._random_close_idx(idx)
+        self._prefetch_adjacent(idx)
+        self._prefetch_adjacent(close_idx)
+        data_array1 = self._get_cached_data(idx)
+        data_array2 = self._get_cached_data(close_idx)
+        # Получаем дату из датафрейма:
+        date_str = str(self.data_frame.iloc[idx]['Datetime']) if 'Datetime' in self.data_frame.columns else ""
         data_array1 = self.transform1(data_array1)
-        data_array2 = self.transform2(data_array2)
-    return data_array1, date_str  # <-- теперь возвращаем дату!
+        return data_array1, date_str  # <-- теперь возвращаем дату!
 
     def _prefetch_adjacent(self, idx):
         for offset in range(1, self.prefetch_factor + 1):

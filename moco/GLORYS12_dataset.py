@@ -16,7 +16,9 @@ class Glorys12Dataset(Dataset):
         transform1=None, 
         transform2=None, 
         random_seed=42,
-        delta_days=15,
+        delta_days_positive=8,  # NEW
+        delta_days_negative=45,  # NEW
+        p_positive=0.5,          # NEW - вероятность положительной пары
         cache_size=512,  #
         num_io_workers=20,  # Количество параллельных IO workers
         prefetch_factor=2  # Предзагрузка следующих элементов
@@ -36,7 +38,9 @@ class Glorys12Dataset(Dataset):
         #         raise FileNotFoundError(f"File {fp} not found")
         self.transform1 = transform1
         self.transform2 = transform2
-        self.delta_days = delta_days
+        self.delta_days_positive = delta_days_positive  # NEW
+        self.delta_days_negative = delta_days_negative  # NEW
+        self.p_positive = p_positive                    # NEW
         self.cache_size = cache_size
         self.num_io_workers = num_io_workers
         self.read_lock = threading.Lock()
@@ -72,25 +76,48 @@ class Glorys12Dataset(Dataset):
     def __len__(self):
         return len(self.file_paths)
 
+    # Заменить метод __getitem__:
     def __getitem__(self, idx):
+        # Решаем: положительная или отрицательная пара
+        if random.random() < self.p_positive:
+            # Положительная пара - близкие дни
+            pair_idx = self._random_close_idx(idx)
+        else:
+            # Отрицательная пара - далекие дни
+            pair_idx = self._random_distant_idx(idx)
         
-        close_idx = self._random_close_idx(idx)
-        # Предзагрузка следующих элементов
+        # Предзагрузка
         self._prefetch_adjacent(idx)
-        self._prefetch_adjacent(close_idx)
-        # Получение данных с кэшированием
+        self._prefetch_adjacent(pair_idx)
+        
+        # Получение данных
         data_array1 = self._get_cached_data(idx)
-        data_array2 = self._get_cached_data(close_idx)
-        # Генерация аугментированных данных
+        data_array2 = self._get_cached_data(pair_idx)
+        
+        # Аугментация
         if self.transform1 and self.transform2:
-
-            # data_array1 = self._load_single_file(idx)   # загружать напрямую
-            # data_array2 = self._load_single_file(close_idx)  
-
             data_array1 = self.transform1(data_array1)
             data_array2 = self.transform2(data_array2)
+        
         return data_array1, data_array2
-
+    # Добавить новый метод для далеких индексов:
+    def _random_distant_idx(self, idx):
+        """Генерация случайного далекого индекса"""
+        valid_indices = []
+        
+        # Индексы до текущего (минус delta_days_negative)
+        if idx > self.delta_days_negative:
+            valid_indices.extend(range(0, idx - self.delta_days_negative))
+        
+        # Индексы после текущего (плюс delta_days_negative)
+        if idx < len(self) - self.delta_days_negative:
+            valid_indices.extend(range(idx + self.delta_days_negative, len(self)))
+        
+        # Если нет подходящих индексов, используем случайный из всего датасета
+        if not valid_indices:
+            return random.choice([i for i in range(len(self)) if i != idx])
+        
+        return random.choice(valid_indices)
     def _prefetch_adjacent(self, idx):
         """Асинхронная предзагрузка соседних индексов"""
         for offset in range(1, self.prefetch_factor + 1):
