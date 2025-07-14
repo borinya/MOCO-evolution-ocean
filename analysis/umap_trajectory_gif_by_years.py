@@ -12,12 +12,12 @@ def load_features(feature_dir):
     feats = [np.load(f) for f in npy_files]
     return np.array(feats), dates
 
-def make_gif_for_year(year, emb, dates, out_dir, points_per_frame=15):
+def make_gif_for_year(year, emb, dates, out_dir, checkpoint_name, points_per_frame=15):
     idxs = [i for i, d in enumerate(dates) if d.startswith(str(year))]
     if not idxs:
         print(f"No data for year {year}")
         return
-    year_dir = os.path.join(out_dir, str(year))
+    year_dir = os.path.join(out_dir, checkpoint_name)
     os.makedirs(year_dir, exist_ok=True)
     frames = []
     n_points = len(idxs)
@@ -37,7 +37,6 @@ def make_gif_for_year(year, emb, dates, out_dir, points_per_frame=15):
         plt.close()
         frames.append(imageio.imread(fname))
         frame_idx += 1
-
     # Дублируем последний кадр для паузы
     for _ in range(10):
         frames.append(frames[-1])
@@ -59,13 +58,14 @@ def make_umap_gifs_by_years(feature_dir, out_dir='/app/MoCo/MOCOv3-MNIST/analysi
     reducer = umap.UMAP(n_components=2, random_state=42)
     emb = reducer.fit_transform(feats)
     years = sorted(set(d[:4] for d in dates))
+    checkpoint_name = os.path.basename(feature_dir.rstrip('/')).replace('.pth.tar','')
     for year in years:
-        make_gif_for_year(year, emb, dates, out_dir, points_per_frame)
+        make_gif_for_year(year, emb, dates, out_dir, checkpoint_name, points_per_frame)
 
 if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument('--feature_dir', type=str, required=False, default='/app/MoCo/MOCOv3-MNIST/features_glorys12_moco256/2025-07-07_moco256_20250216_141630_checkpoint_0202')
+    parser.add_argument('--feature_dir', type=str, required=False, default='/app/MoCo/MOCOv3-MNIST/features_glorys12_moco256/2025-07-14_moco256_20250711_160100_checkpoint_0299')
     parser.add_argument('--out_dir', type=str, default='/app/MoCo/MOCOv3-MNIST/analysis/gifs')
     parser.add_argument('--points_per_frame', type=int, default=5)
     args = parser.parse_args()

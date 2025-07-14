@@ -1,7 +1,7 @@
 import os
 import torch
 import numpy as np
-from extract_features.config import CHECKPOINT_PATH
+from extract_features.config import CHECKPOINT_PATH, MOCO_DIM
 
 def replace_batchnorm_with_identity(model):
     for name, module in model.named_children():
@@ -18,7 +18,7 @@ def initialize_model():
 
     model = MoCo_ResNet(
         partial(torchvision_models.__dict__['resnet50'], zero_init_residual=True), 
-        256, 4096, 1.0
+        MOCO_DIM, 4096, 1.0
     )
 
     input_channels = 7

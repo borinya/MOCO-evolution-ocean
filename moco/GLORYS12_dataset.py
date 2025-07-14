@@ -100,24 +100,7 @@ class Glorys12Dataset(Dataset):
             data_array2 = self.transform2(data_array2)
         
         return data_array1, data_array2
-    # Добавить новый метод для далеких индексов:
-    def _random_distant_idx(self, idx):
-        """Генерация случайного далекого индекса"""
-        valid_indices = []
-        
-        # Индексы до текущего (минус delta_days_negative)
-        if idx > self.delta_days_negative:
-            valid_indices.extend(range(0, idx - self.delta_days_negative))
-        
-        # Индексы после текущего (плюс delta_days_negative)
-        if idx < len(self) - self.delta_days_negative:
-            valid_indices.extend(range(idx + self.delta_days_negative, len(self)))
-        
-        # Если нет подходящих индексов, используем случайный из всего датасета
-        if not valid_indices:
-            return random.choice([i for i in range(len(self)) if i != idx])
-        
-        return random.choice(valid_indices)
+
     def _prefetch_adjacent(self, idx):
         """Асинхронная предзагрузка соседних индексов"""
         for offset in range(1, self.prefetch_factor + 1):
@@ -195,8 +178,8 @@ class Glorys12Dataset(Dataset):
 
     def _random_close_idx(self, idx):
         """Генерация случайного близкого индекса"""
-        start = max(0, idx - self.delta_days)
-        end = min(len(self), idx + self.delta_days + 1)
+        start = max(0, idx - self.delta_days_positive)
+        end = min(len(self), idx + self.delta_days_positive + 1)
         return random.choice([i for i in range(start, end) if i != idx])
 
     def __del__(self):
@@ -204,7 +187,24 @@ class Glorys12Dataset(Dataset):
         self.io_executor.shutdown(wait=True)
 
 
-
+    # Добавить новый метод для далеких индексов:
+    def _random_distant_idx(self, idx):
+        """Генерация случайного далекого индекса"""
+        valid_indices = []
+        
+        # Индексы до текущего (минус delta_days_negative)
+        if idx > self.delta_days_negative:
+            valid_indices.extend(range(0, idx - self.delta_days_negative))
+        
+        # Индексы после текущего (плюс delta_days_negative)
+        if idx < len(self) - self.delta_days_negative:
+            valid_indices.extend(range(idx + self.delta_days_negative, len(self)))
+        
+        # Если нет подходящих индексов, используем случайный из всего датасета
+        if not valid_indices:
+            return random.choice([i for i in range(len(self)) if i != idx])
+        
+        return random.choice(valid_indices)
 # import pandas as pd
 # import random
 # import numpy as np

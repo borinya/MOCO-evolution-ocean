@@ -31,7 +31,7 @@ def cosine_histogram(feature_dir, out_png='cosine_histogram.png'):
 if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument('--feature_dir', type=str, required=False, default= '/app/MoCo/MOCOv3-MNIST/features_glorys12_moco256/2025-07-07_moco256_20250216_141630_checkpoint_0202')
-    parser.add_argument('--out', type=str, default='cosine_histogram.png')
+    parser.add_argument('--feature_dir', type=str, required=False, default= '/app/MoCo/MOCOv3-MNIST/features_glorys12_moco256/2025-07-14_moco256_20250712_103622_checkpoint_0299')
+    parser.add_argument('--out', type=str, default='/app/MoCo/MOCOv3-MNIST/analysis/img/20250712_103622_cosine_histogram.png')
     args = parser.parse_args()
     cosine_histogram(args.feature_dir, args.out)
