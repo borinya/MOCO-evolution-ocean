@@ -9,4 +9,5 @@ runs_transformer/
 token
 .vscode
 features_glorys12_moco256/
-/app/MoCo/MOCOv3-MNIST/analysis/gifs
+analysis/gifs
+analysis/img
