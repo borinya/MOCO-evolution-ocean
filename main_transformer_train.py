@@ -13,22 +13,34 @@ import re
 
 class OceanDataset(Dataset):
     def __init__(self, directory, sequence_length=180, prediction_horizon=30, 
-                 predict_differences=True, transform=None):
-        """
-        Args:
-            directory (str): Путь к директории с файлами векторов
-            sequence_length (int): Длина входной последовательности (в днях)
-            prediction_horizon (int): Горизонт прогнозирования (в днях)
-            predict_differences (bool): Прогнозировать разницу вместо абсолютных значений
-            transform (callable): Трансформация для нормализации данных
-        """
+                predict_differences=True, normalization='mean_std', mean_std_file=None):
         self.directory = directory
         self.sequence_length = sequence_length
         self.prediction_horizon = prediction_horizon
         self.predict_differences = predict_differences
-        self.transform = transform
-        self.data = self._load_and_sort_vectors()
         
+        # Инициализация transform ДО загрузки данных
+        if mean_std_file and os.path.exists(mean_std_file):
+            stats = np.load(mean_std_file, allow_pickle=True).item()
+            if normalization == 'mean_std':
+                self.transform = lambda x: (x - torch.tensor(stats['mean'])) / torch.tensor(stats['std'])
+            elif normalization == 'median_scale':
+                scale = torch.max(torch.tensor(stats['max'] - stats['min']))
+                self.transform = lambda x: (x - torch.tensor(stats['median'])) / scale
+            elif normalization == 'minmax':
+                self.transform = lambda x: (x - torch.tensor(stats['min'])) / \
+                                        (torch.tensor(stats['max'] - stats['min']) + 1e-8)
+            else:
+                self.transform = None
+        else:
+            self.transform = None
+            print(f"Warning: Mean-std file not found at {mean_std_file}, no normalization applied")
+        
+        # Теперь загружаем данные
+        self.data = self._load_and_sort_vectors()
+        required_days = sequence_length + prediction_horizon
+        if len(self.data) < required_days:
+            raise ValueError(f"Недостаточно данных: нужно {required_days} дней, доступно {len(self.data)}")
     def _load_and_sort_vectors(self):
         """Загружает и сортирует все векторы из директории"""
         files = []
@@ -88,29 +100,44 @@ class OceanDataset(Dataset):
             
         return sequence, target
 
-def create_data_loaders(dataset, batch_size, train_ratio=0.8):
-    """Создает DataLoader для обучения и валидации"""
+def create_data_loaders(dataset, batch_size=None, train_ratio=0.8):
+    """Создает DataLoader с возможностью загрузки всех данных сразу"""
     n = len(dataset)
     train_size = int(train_ratio * n)
     val_size = n - train_size
     
-    # Разделяем данные без перемешивания (важно для временных рядов)
+    # Разделяем данные
     train_dataset = Subset(dataset, range(0, train_size))
     val_dataset = Subset(dataset, range(train_size, n))
     
-    train_loader = DataLoader(
-        train_dataset,
-        batch_size=batch_size,
-        shuffle=True,    # Перемешиваем батчи, но не временные последовательности
-        pin_memory=True
-    )
-    
-    val_loader = DataLoader(
-        val_dataset,
-        batch_size=batch_size,
-        shuffle=False,
-        pin_memory=True
-    )
+    # Если batch_size не указан - загружаем все данные
+    if batch_size is None or batch_size <= 0:
+        train_loader = DataLoader(
+            train_dataset,
+            batch_size=len(train_dataset),
+            shuffle=False,
+            pin_memory=True
+        )
+        val_loader = DataLoader(
+            val_dataset,
+            batch_size=len(val_dataset),
+            shuffle=False,
+            pin_memory=True
+        )
+        print(f"Используется полный набор данных: train={len(train_dataset)}, val={len(val_dataset)}")
+    else:
+        train_loader = DataLoader(
+            train_dataset,
+            batch_size=batch_size,
+            shuffle=True,
+            pin_memory=True
+        )
+        val_loader = DataLoader(
+            val_dataset,
+            batch_size=batch_size,
+            shuffle=False,
+            pin_memory=True
+        )
     
     return train_loader, val_loader
 
@@ -141,11 +168,16 @@ def parse_args():
     
     # Пути и логирование
     parser.add_argument('--data_dir', type=str, default='/app/MoCo/MOCOv3-MNIST/features_glorys12_moco256/2025-07-07_moco256_20250216_141630_checkpoint_0202', help='Путь к данным')  # Обновлено
-    parser.add_argument('--log_dir', type=str, default='/app/transformer/logs', help='Директория для логов')
+    parser.add_argument('--log_dir', type=str, default='/app/MoCo/MOCOv3-MNIST/logs_transformer', help='Директория для логов')
     parser.add_argument('--model_dir', type=str, default='/app/transformer/models', help='Директория для моделей')
-    parser.add_argument('--mean_std_file', type=str, default='/app/LSTM_salmon/mean_std.npy', help='Файл с нормализацией')
+    parser.add_argument('--mean_std_file', type=str, default='/app/transformer/data_stats.npy', help='Файл с нормализацией')
     
-    
+        # Добавляем новые параметры
+    parser.add_argument('--normalization', type=str, default='mean_std',
+                       choices=['mean_std', 'median_scale', 'minmax', 'none'],
+                       help='Метод нормализации данных')
+    parser.add_argument('--full_batch', action='store_true',
+                       help='Использовать весь набор данных как один батч')
     
     
     parser.add_argument('--early_stop_patience', type=int, default=30, help='Ранняя остановка после N эпох без улучшений')
@@ -180,7 +212,7 @@ class OceanTransformer(nn.Module):
 def train(model, data_loader, criterion, optimizer, device, epoch, writer):
     model.train()
     total_loss = 0
-    for inputs, targets in data_loader:
+    for batch_idx, (inputs, targets) in enumerate(data_loader):
         inputs, targets = inputs.to(device), targets.to(device)
         
         optimizer.zero_grad()
@@ -190,6 +222,9 @@ def train(model, data_loader, criterion, optimizer, device, epoch, writer):
         optimizer.step()
         
         total_loss += loss.item()
+        
+        # Логируем loss для каждого батча
+        writer.add_scalar('Loss/train_batch', loss.item(), epoch * len(data_loader) + batch_idx)
     
     avg_loss = total_loss / len(data_loader)
     writer.add_scalar('Loss/train', avg_loss, epoch)
@@ -198,21 +233,49 @@ def train(model, data_loader, criterion, optimizer, device, epoch, writer):
 def validate(model, data_loader, criterion, device, epoch, writer):
     model.eval()
     total_loss = 0
+    all_targets = []
+    all_outputs = []
+    
     with torch.no_grad():
-        for inputs, targets in data_loader:
+        for batch_idx, (inputs, targets) in enumerate(data_loader):
             inputs, targets = inputs.to(device), targets.to(device)
             outputs = model(inputs)
             loss = criterion(outputs, targets)
             total_loss += loss.item()
+            
+            # Логируем loss для каждого батча
+            writer.add_scalar('Loss/val_batch', loss.item(), epoch * len(data_loader) + batch_idx)
+            
+            # Сохраняем для визуализации
+            if batch_idx == 0:  # Сохраняем только первый батч для экономии памяти
+                all_targets.append(targets.cpu())
+                all_outputs.append(outputs.cpu())
     
     avg_loss = total_loss / len(data_loader)
     writer.add_scalar('Loss/val', avg_loss, epoch)
+    
+    # Визуализация примеров прогнозов
+    if len(all_targets) > 0:
+        targets = torch.cat(all_targets)
+        outputs = torch.cat(all_outputs)
+        try:
+            # Логируем несколько случайных фичей
+            for i in range(min(10, targets.shape[1])):  # Первые 10 фичей
+                writer.add_scalars(f'Predictions/feature_{i}',
+                                 {'target': targets[0, i], 'pred': outputs[0, i]}, epoch)
+        except Exception as e:
+            print(f"Ошибка при логировании предсказаний: {e}")
+    
     return avg_loss
 
 def main():
     args = parse_args()
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    
+    # Проверяем доступную память GPU
+    if torch.cuda.is_available():
+        total_mem = torch.cuda.get_device_properties(0).total_memory
+        free_mem = torch.cuda.memory_reserved(0)
+        print(f"GPU Memory - Total: {total_mem/1e9:.2f}GB, Free: {(total_mem-free_mem)/1e9:.2f}GB")
     # Создание директорий
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     log_dir = os.path.join(args.log_dir, timestamp)
@@ -237,21 +300,19 @@ def main():
         transforms.Lambda(lambda x: (x - mean) / std)
     ])
     
-    # Создание датасета
+        # Создание датасета
     dataset = OceanDataset(
         directory=args.data_dir,
         sequence_length=args.sequence_length,
         prediction_horizon=args.prediction_horizon,
         predict_differences=args.predict_differences,
-        transform=transform
+        normalization=args.normalization,  # Используем normalization вместо transform
+        mean_std_file=args.mean_std_file
     )
     
-    # Создание DataLoader
-    train_loader, val_loader = create_data_loaders(
-        dataset, 
-        args.batch_size
-    )
-    
+    batch_size = -1 if args.full_batch else args.batch_size
+    train_loader, val_loader = create_data_loaders(dataset, batch_size=batch_size)
+        
     # Инициализация модели
     model = OceanTransformer(args).to(device)
     

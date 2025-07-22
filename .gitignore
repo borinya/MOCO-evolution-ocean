@@ -11,3 +11,7 @@ token
 features_glorys12_moco256/
 analysis/gifs
 analysis/img
+logs_transformer/
+optuna_results_*.json
+transformer_optuna*.db
+data_stats.npy
