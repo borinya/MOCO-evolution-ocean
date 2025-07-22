@@ -52,4 +52,4 @@ if __name__ == '__main__':
     parser.add_argument('--feature_dir', type=str, required=True)
     parser.add_argument('--out_html', type=str, required=True)
     args = parser.parse_args()
-    plot_umap_3d(args.feature_dir, args.out_html)
+    plot_umap_3d(args.feature_dir, args.out_html) 
