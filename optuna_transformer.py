@@ -18,6 +18,9 @@ def objective(trial):
         'learning_rate': trial.suggest_float('learning_rate', 1e-5, 1e-3, log=True),
         'batch_size': trial.suggest_categorical('batch_size', [64, 128, 256]),
         'lr_scheduler': trial.suggest_categorical('lr_scheduler', ['cosine', 'step', 'plateau']),
+        'sequence_length': trial.suggest_int('sequence_length', 100, 360, step=10),  # Новый параметр
+        'prediction_horizon': trial.suggest_int('prediction_horizon', 10, 60, step=5),  # Новый параметр
+        'predict_differences': trial.suggest_categorical('predict_differences', [True, False]),  # Новый параметр
         'num_epochs': 100,  # Фиксируем 100 эпох на trial
         'early_stop_patience': 30,
     }
@@ -33,6 +36,9 @@ def objective(trial):
         f'--learning_rate={params["learning_rate"]}',
         f'--batch_size={params["batch_size"]}',
         f'--lr_scheduler={params["lr_scheduler"]}',
+        f'--sequence_length={params["sequence_length"]}',  # Новый аргумент
+        f'--prediction_horizon={params["prediction_horizon"]}',  # Новый аргумент
+        f'--predict_differences={params["predict_differences"]}',  # Новый аргумент
         f'--num_epochs={params["num_epochs"]}',
         f'--early_stop_patience={params["early_stop_patience"]}',
         '--log_dir=/app/transformer/logs/optuna',
