@@ -6,28 +6,23 @@ import os
 import json
 import time
 from datetime import datetime
-# Перед запуском добавьте проверку
-stats_file = '/app/transformer/data_stats.npy'
-if not os.path.exists(stats_file):
-    raise FileNotFoundError(f"Stats file not found at {stats_file}. Run compute_stats.py first")
 
 def objective(trial):
     # Параметры для оптимизации
     params = {
-        'd_model': trial.suggest_categorical('d_model', [256, 512, 768, 1024]),
-        'nhead': trial.suggest_categorical('nhead', [4, 8, 16, 32]),
-        'num_layers': trial.suggest_int('num_layers', 2, 8),
-        'dim_feedforward': trial.suggest_categorical('dim_feedforward', [1024, 2048, 3072, 4096]),
-        'dropout': trial.suggest_float('dropout', 0.0, 0.5),
-        'learning_rate': trial.suggest_float('learning_rate', 1e-6, 1e-3, log=True),
-        'batch_size': trial.suggest_categorical('batch_size', [512]),  
+        'd_model': trial.suggest_categorical('d_model', [256, 512, 768]),
+        'nhead': trial.suggest_categorical('nhead', [4, 8, 16]),
+        'num_layers': trial.suggest_int('num_layers', 2, 6),
+        'dim_feedforward': trial.suggest_categorical('dim_feedforward', [1024, 2048, 3072]),
+        'dropout': trial.suggest_float('dropout', 0.0, 0.3),
+        'learning_rate': trial.suggest_float('learning_rate', 1e-5, 1e-3, log=True),
+        'batch_size': trial.suggest_categorical('batch_size', [64, 128, 256]),
         'lr_scheduler': trial.suggest_categorical('lr_scheduler', ['cosine', 'step', 'plateau']),
-        'sequence_length': trial.suggest_int('sequence_length', 100, 200, step=5),
-        'prediction_horizon': trial.suggest_int('prediction_horizon', 25, 60, step=1),
-        'predict_differences': trial.suggest_categorical('predict_differences', [True, False]),
-        'normalization': trial.suggest_categorical('normalization', ['mean_std']),
-        'num_epochs': 100,
-        'early_stop_patience': trial.suggest_int('early_stop_patience', 20, 40, step=5),
+        'sequence_length': trial.suggest_int('sequence_length', 100, 360, step=10),  # Новый параметр
+        'prediction_horizon': trial.suggest_int('prediction_horizon', 10, 60, step=5),  # Новый параметр
+        'predict_differences': trial.suggest_categorical('predict_differences', [True, False]),  # Новый параметр
+        'num_epochs': 100,  # Фиксируем 100 эпох на trial
+        'early_stop_patience': 30,
     }
 
     # Собираем команду для запуска
@@ -46,9 +41,7 @@ def objective(trial):
         f'--predict_differences={params["predict_differences"]}',  # Новый аргумент
         f'--num_epochs={params["num_epochs"]}',
         f'--early_stop_patience={params["early_stop_patience"]}',
-        f'--normalization={params["normalization"]}',
-        '--mean_std_file=/app/transformer/data_stats.npy',
-        '--log_dir=/app/transformer/logs/optuna',
+        '--log_dir=/app/MoCo/MOCOv3-MNIST/logs_transformer',
         '--model_dir=/app/transformer/models/optuna',
     ]
 
@@ -58,17 +51,11 @@ def objective(trial):
         print(f"  {k}: {v}")
 
     process = subprocess.Popen(
-        cmd,
-        stdout=subprocess.PIPE,
+        cmd, 
+        stdout=subprocess.PIPE, 
         stderr=subprocess.PIPE,
         text=True
     )
-
-    # Выводим ошибки, если они есть
-    stderr_output = process.stderr.read()
-    if stderr_output:
-        print("Ошибки выполнения:")
-        print(stderr_output)
 
     # Собираем вывод в реальном времени
     best_loss = None
@@ -110,7 +97,7 @@ if __name__ == "__main__":
     # Запускаем оптимизацию
     study.optimize(
         objective, 
-        n_trials=1000,
+        n_trials=100,
         n_jobs=1,  # Запускаем последовательно из-за использования GPU
         show_progress_bar=True
     )
@@ -124,18 +111,18 @@ if __name__ == "__main__":
     
     print(f"\n🎯 Лучший валидационный лосс: {study.best_value:.4f}")
     
-    # Сохраняем результаты в JSON
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    with open(f"optuna_results_{timestamp}.json", "w") as f:
-        json.dump({
-            "best_value": study.best_value,
-            "best_params": study.best_params,
-            "trials": [
-                {
-                    "number": t.number,
-                    "value": t.value,
-                    "params": t.params,
-                    "user_attrs": t.user_attrs
-                } for t in study.trials
-            ]
-        }, f, indent=2)
+    # # Сохраняем результаты в JSON
+    # timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    # with open(f"optuna_results_{timestamp}.json", "w") as f:
+    #     json.dump({
+    #         "best_value": study.best_value,
+    #         "best_params": study.best_params,
+    #         "trials": [
+    #             {
+    #                 "number": t.number,
+    #                 "value": t.value,
+    #                 "params": t.params,
+    #                 "user_attrs": t.user_attrs
+    #             } for t in study.trials
+    #         ]
+    #     }, f, indent=2)

@@ -278,7 +278,7 @@ def main_worker(gpu, ngpus_per_node, args):
                                 weight_decay=args.weight_decay)
         
     scaler = torch.cuda.amp.GradScaler()
-    summary_writer = SummaryWriter() if ((args.rank == 0) or (args.rank == -1)) else None
+    summary_writer = SummaryWriter() #if ((args.rank == 0) or (args.rank == -1)) else None
     
     # Запись аргументов в TensorBoard
     if summary_writer is not None:
